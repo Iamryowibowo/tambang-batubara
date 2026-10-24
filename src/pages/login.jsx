@@ -22,7 +22,6 @@ import {
 } from "lucide-react";
 
 export default function Login() {
-  // Ambil data tersimpan langsung saat inisialisasi state agar bersih dari warning linter
   const [email, setEmail] = useState(() => {
     return localStorage.getItem("rememberedEmail") || "";
   });
@@ -61,49 +60,57 @@ export default function Login() {
 
     const cleanEmail = email.trim().toLowerCase();
 
+    // Langkah 1: login ke Firebase Auth (dipisah supaya error-nya jelas)
+    let user;
     try {
-      // 1. Autentikasi langsung ke Firebase Auth menggunakan Email & Password
       const userCredential = await signInWithEmailAndPassword(
         auth,
         cleanEmail,
         password,
       );
-      const user = userCredential.user;
+      user = userCredential.user;
+    } catch (err) {
+      console.error("AUTH ERROR:", err.code, err.message);
+      toast.error(`Login gagal: ${err.code || err.message}`);
+      setLoading(false);
+      return;
+    }
 
-      // 2. Ambil data role & nama asli dari Firestore berdasarkan UID user
+    // Langkah 2: ambil role & nama dari Firestore (dipisah juga)
+    try {
       const userDocRef = doc(db, "users", user.uid);
       const userDocSnap = await getDoc(userDocRef);
 
       if (userDocSnap.exists()) {
         const userData = userDocSnap.data();
-        // Simpan role dan nama asli dari database agar sidebar & hak akses terbaca
         localStorage.setItem("userRole", userData.role || "staff");
         localStorage.setItem(
           "userName",
           userData.name || userData.username || "Pengguna",
         );
       } else {
-        // Fallback jika dokumen di Firestore belum ada
+        console.warn("Dokumen users/" + user.uid + " tidak ditemukan");
         localStorage.setItem("userRole", "staff");
         localStorage.setItem("userName", "Pengguna");
       }
-
-      // 3. Handle fitur "Ingat Email Saya"
-      if (rememberMe) {
-        localStorage.setItem("rememberedEmail", cleanEmail);
-      } else {
-        localStorage.removeItem("rememberedEmail");
-      }
-
-      toast.success("Login berhasil! Mengalihkan...");
-      setTimeout(() => {
-        navigate("/dashboard");
-      }, 1000);
     } catch (err) {
-      console.error(err);
-      toast.error("Gagal masuk! Periksa kembali email dan password Anda.");
+      console.error("FIRESTORE ERROR:", err.code, err.message);
+      toast.error(`Firestore gagal: ${err.code || err.message}`);
       setLoading(false);
+      return;
     }
+
+    // Langkah 3: fitur "Ingat Email Saya"
+    if (rememberMe) {
+      localStorage.setItem("rememberedEmail", cleanEmail);
+    } else {
+      localStorage.removeItem("rememberedEmail");
+    }
+
+    toast.success("Login berhasil! Mengalihkan...");
+    setTimeout(() => {
+      navigate("/dashboard");
+    }, 1000);
   };
 
   return (
@@ -138,7 +145,7 @@ export default function Login() {
         </div>
 
         <form onSubmit={handleLogin} className="space-y-4">
-          {/* Input Email / User ID */}
+          {/* Input Email */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">
               Email ID Karyawan
