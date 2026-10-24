@@ -1,6 +1,6 @@
 import { useState } from "react";
 import CustomSelect from "../Common/CustomSelect";
-import { Eye, EyeOff, KeyRound } from "lucide-react";
+import { Eye, EyeOff, Info } from "lucide-react";
 
 export default function UserFormModal({
   isOpen,
@@ -19,7 +19,6 @@ export default function UserFormModal({
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    // Bersihkan username dari spasi/karakter aneh
     const cleanUsername = username.trim().toLowerCase().replace(/\s+/g, "_");
 
     onSubmit({
@@ -44,6 +43,7 @@ export default function UserFormModal({
             {initialData ? "Edit User & Hak Akses" : "Tambah User Baru"}
           </h3>
           <button
+            type="button"
             onClick={onClose}
             className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs font-bold cursor-pointer"
           >
@@ -77,7 +77,8 @@ export default function UserFormModal({
               placeholder="e.g. ahmad_logistik (tanpa spasi)"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              disabled={!!initialData} // Username dikunci saat edit agar akun Auth tidak rusak
+              disabled={!!initialData}
+              autoCapitalize="none"
               className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-xs text-slate-800 dark:text-slate-200 focus:outline-none disabled:opacity-50"
               required
             />
@@ -88,55 +89,42 @@ export default function UserFormModal({
             )}
           </div>
 
-          {/* Input Password + Show/Hide */}
-          <div>
-            <div className="flex justify-between items-center mb-1">
-              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-                {initialData
-                  ? "Set Password Baru (Opsional)"
-                  : "Password Login *"}
+          {/* Password (hanya saat tambah user baru) */}
+          {!initialData ? (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                Password Login <span className="text-red-500">*</span>
               </label>
-              {initialData && (
-                <span className="text-[10px] text-slate-400 italic">
-                  Kosongkan jika tidak ubah password
-                </span>
-              )}
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Minimal 6 karakter"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-3 pr-10 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-xs text-slate-800 dark:text-slate-200 focus:outline-none"
+                  required
+                  minLength={6}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition cursor-pointer"
+                >
+                  {showPassword ? (
+                    <EyeOff className="w-3.5 h-3.5" />
+                  ) : (
+                    <Eye className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
             </div>
-
-            <div className="relative">
-              <input
-                type={showPassword ? "text" : "password"}
-                placeholder={
-                  initialData
-                    ? "Masukkan password baru..."
-                    : "Minimal 6 karakter"
-                }
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-3 pr-10 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-xs text-slate-800 dark:text-slate-200 focus:outline-none"
-                required={!initialData}
-                minLength={6}
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition cursor-pointer"
-              >
-                {showPassword ? (
-                  <EyeOff className="w-3.5 h-3.5" />
-                ) : (
-                  <Eye className="w-3.5 h-3.5" />
-                )}
-              </button>
-            </div>
-          </div>
-
-          {initialData && (
+          ) : (
             <div className="bg-amber-500/10 border border-amber-500/20 p-2.5 rounded-xl flex items-start gap-2">
-              <KeyRound className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
               <p className="text-[10px] text-amber-700 dark:text-amber-300 leading-tight">
-                Jika pegawai lupa password, Supervisor cukup ketik password baru
-                di sini lalu klik Update Akun.
+                Password tidak bisa diubah dari sini. Jika karyawan lupa
+                password, hapus akunnya lalu daftarkan ulang dengan username
+                baru.
               </p>
             </div>
           )}

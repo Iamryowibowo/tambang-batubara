@@ -1,5 +1,11 @@
 import { useState } from "react";
-import { collection, getDocs, doc, writeBatch } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  doc,
+  writeBatch,
+  Timestamp,
+} from "firebase/firestore";
 import { db } from "../../firebase";
 import { toast, Toaster } from "react-hot-toast";
 import {
@@ -14,6 +20,54 @@ import {
 } from "lucide-react";
 
 import DeleteConfirmModal from "../../components/Buttons/DeleteConfirmModal";
+
+// Hanya koleksi ini yang dibackup & dipulihkan
+const BACKUP_COLLECTIONS = ["items", "barangMasuk", "barangKeluar", "requests"];
+
+// Timestamp -> object JSON
+const serialize = (value) => {
+  if (value instanceof Timestamp) {
+    return {
+      __type: "timestamp",
+      seconds: value.seconds,
+      nanoseconds: value.nanoseconds,
+    };
+  }
+  if (Array.isArray(value)) return value.map(serialize);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = serialize(v);
+    return out;
+  }
+  return value;
+};
+
+// object JSON -> Timestamp (mendukung format lama & baru)
+const deserialize = (value) => {
+  if (Array.isArray(value)) return value.map(deserialize);
+  if (value && typeof value === "object") {
+    const isTimestamp =
+      (value.__type === "timestamp" ||
+        value.type === "firestore/timestamp/1.0") &&
+      typeof value.seconds === "number";
+    if (isTimestamp) {
+      return new Timestamp(value.seconds, value.nanoseconds || 0);
+    }
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = deserialize(v);
+    return out;
+  }
+  return value;
+};
+
+// Jalankan operasi batch per 400 supaya tidak melewati batas Firestore
+const commitInChunks = async (ops) => {
+  for (let i = 0; i < ops.length; i += 400) {
+    const batch = writeBatch(db);
+    ops.slice(i, i + 400).forEach((op) => op(batch));
+    await batch.commit();
+  }
+};
 
 export default function Settings() {
   const [loadingExport, setLoadingExport] = useState(false);
@@ -33,53 +87,33 @@ export default function Settings() {
     warningStock: 10,
   });
 
-  // DAFTAR KOLEKSI YANG SESUAI DENGAN FIRESTORE ANDA
-  const collectionsList = [
-    "users",
-    "items",
-    "vendors",
-    "units",
-    "barangMasuk",
-    "barangKeluar",
-    "requests",
-    "departemen",
-    "employees",
-    "categories",
-  ];
-
-  // 1. Logika Export (Backup) dengan Nama Koleksi yang Akurat
+  // 1. Backup (hanya koleksi transaksi)
   const handleExportData = async () => {
-    const toastId = toast.loading("Menyiapkan cadangan database lengkap...");
+    const toastId = toast.loading("Menyiapkan cadangan data...");
     try {
       setLoadingExport(true);
-      let backupData = {};
+      const backupData = {};
 
-      for (const colName of collectionsList) {
-        const colRef = collection(db, colName);
-        const snapshot = await getDocs(colRef);
+      for (const colName of BACKUP_COLLECTIONS) {
+        const snapshot = await getDocs(collection(db, colName));
         backupData[colName] = {};
-
         snapshot.forEach((docSnap) => {
-          backupData[colName][docSnap.id] = docSnap.data();
+          backupData[colName][docSnap.id] = serialize(docSnap.data());
         });
       }
 
       const dataStr =
         "data:text/json;charset=utf-8," +
         encodeURIComponent(JSON.stringify(backupData, null, 2));
-      const downloadAnchor = document.createElement("a");
-
+      const a = document.createElement("a");
       const dateStr = new Date().toISOString().split("T")[0];
-      downloadAnchor.setAttribute("href", dataStr);
-      downloadAnchor.setAttribute(
-        "download",
-        `backup_megaputra_${dateStr}.json`,
-      );
-      document.body.appendChild(downloadAnchor);
-      downloadAnchor.click();
-      downloadAnchor.remove();
+      a.setAttribute("href", dataStr);
+      a.setAttribute("download", `backup_transaksi_megaputra_${dateStr}.json`);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
 
-      toast.success("Backup database berhasil diunduh!", { id: toastId });
+      toast.success("Backup berhasil diunduh!", { id: toastId });
     } catch (err) {
       console.error(err);
       toast.error("Gagal melakukan backup data.", { id: toastId });
@@ -91,20 +125,17 @@ export default function Settings() {
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
     setSelectedFile(file);
     setIsConfirmModalOpen(true);
     e.target.value = null;
   };
 
-  // 2. Logika Import (Restore) dengan Clean Data
+  // 2. Restore (hanya koleksi transaksi yang ada di file)
   const executeImportData = async () => {
     if (!selectedFile) return;
 
     setIsConfirmModalOpen(false);
-    const toastId = toast.loading(
-      "Membersihkan data lama & memulihkan database...",
-    );
+    const toastId = toast.loading("Memulihkan data...");
     setLoadingImport(true);
 
     const reader = new FileReader();
@@ -113,53 +144,46 @@ export default function Settings() {
       try {
         const backupData = JSON.parse(event.target.result);
 
-        // Hapus data lama dari koleksi server
-        for (const colName of collectionsList) {
-          const colRef = collection(db, colName);
-          const snapshot = await getDocs(colRef);
+        // Ambil hanya koleksi yang diizinkan DAN ada di file
+        const targets = BACKUP_COLLECTIONS.filter(
+          (name) => backupData[name] && typeof backupData[name] === "object",
+        );
 
-          if (!snapshot.empty) {
-            const deleteBatch = writeBatch(db);
-            snapshot.forEach((docSnap) => {
-              deleteBatch.delete(docSnap.ref);
-            });
-            await deleteBatch.commit();
+        if (targets.length === 0) {
+          throw new Error("File tidak berisi data yang bisa dipulihkan.");
+        }
+
+        const ops = [];
+
+        for (const colName of targets) {
+          // Hapus data lama koleksi ini saja
+          const snapshot = await getDocs(collection(db, colName));
+          snapshot.forEach((docSnap) => {
+            ops.push((batch) => batch.delete(docSnap.ref));
+          });
+
+          // Tulis data dari file
+          for (const [docId, docData] of Object.entries(backupData[colName])) {
+            ops.push((batch) =>
+              batch.set(doc(db, colName, docId), deserialize(docData)),
+            );
           }
         }
 
-        // Masukkan data baru dari file JSON
-        const batch = writeBatch(db);
-        let operationCount = 0;
+        await commitInChunks(ops);
 
-        for (const [colName, documents] of Object.entries(backupData)) {
-          if (!documents) continue;
-          for (const [docId, docData] of Object.entries(documents)) {
-            const docRef = doc(db, colName, docId);
-            batch.set(docRef, docData);
-            operationCount++;
-
-            if (operationCount >= 400) {
-              await batch.commit();
-              operationCount = 0;
-            }
-          }
-        }
-
-        if (operationCount > 0) {
-          await batch.commit();
-        }
-
-        toast.success("Database berhasil dipulihkan sepenuhnya!", {
+        toast.success(`Berhasil memulihkan: ${targets.join(", ")}`, {
           id: toastId,
         });
-        setTimeout(() => {
-          window.location.reload();
-        }, 1500);
+        setTimeout(() => window.location.reload(), 1500);
       } catch (err) {
         console.error(err);
-        toast.error("Gagal memulihkan database. Format file tidak valid.", {
-          id: toastId,
-        });
+        toast.error(
+          err.message?.includes("File tidak berisi")
+            ? err.message
+            : "Gagal memulihkan data. Format file tidak valid.",
+          { id: toastId },
+        );
       } finally {
         setLoadingImport(false);
         setSelectedFile(null);
@@ -190,7 +214,7 @@ export default function Settings() {
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
             Manajemen konfigurasi perusahaan, parameter stok, dan pencadangan
-            database terpusat.
+            data transaksi.
           </p>
         </div>
         <button
@@ -283,7 +307,7 @@ export default function Settings() {
                   Backup & Pemulihan
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Pusat data database Firestore
+                  Data transaksi: barang, barang masuk/keluar, permintaan
                 </p>
               </div>
             </div>
@@ -291,8 +315,9 @@ export default function Settings() {
             <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl flex items-start gap-2.5">
               <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
               <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-relaxed">
-                Fitur ini bersifat sensitif. Mengunggah file restore akan
-                menimpa data server dengan isi file backup.
+                Hanya data Items, Barang Masuk, Barang Keluar, dan Request yang
+                dicadangkan. Restore akan menimpa keempat data tersebut. Data
+                user dan data master lain tidak berubah.
               </p>
             </div>
 
@@ -341,8 +366,8 @@ export default function Settings() {
           setSelectedFile(null);
         }}
         onConfirm={executeImportData}
-        title="Konfirmasi Pemulihan Database"
-        message={`Apakah Anda yakin ingin memulihkan database menggunakan file "${selectedFile?.name}"?`}
+        title="Konfirmasi Pemulihan Data"
+        message={`Pulihkan data Items, Barang Masuk, Barang Keluar, dan Request dari file "${selectedFile?.name}"? Data saat ini di keempat koleksi itu akan ditimpa.`}
       />
     </div>
   );

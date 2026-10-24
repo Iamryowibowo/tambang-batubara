@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../firebase";
 import { useNavigate } from "react-router-dom";
@@ -8,7 +8,7 @@ import gsap from "gsap";
 
 import {
   Pickaxe,
-  Mail,
+  User,
   Lock,
   Eye,
   EyeOff,
@@ -21,12 +21,14 @@ import {
   ShieldAlert,
 } from "lucide-react";
 
+const EMAIL_DOMAIN = "@megaputra.internal";
+
 export default function Login() {
-  const [email, setEmail] = useState(() => {
-    return localStorage.getItem("rememberedEmail") || "";
+  const [username, setUsername] = useState(() => {
+    return localStorage.getItem("rememberedUsername") || "";
   });
   const [rememberMe, setRememberMe] = useState(() => {
-    return !!localStorage.getItem("rememberedEmail");
+    return !!localStorage.getItem("rememberedUsername");
   });
 
   const [password, setPassword] = useState("");
@@ -54,57 +56,75 @@ export default function Login() {
     return () => ctx.revert();
   }, []);
 
+  const getAuthErrorMessage = (code) => {
+    switch (code) {
+      case "auth/invalid-credential":
+      case "auth/wrong-password":
+      case "auth/user-not-found":
+        return "Username atau password salah.";
+      case "auth/too-many-requests":
+        return "Terlalu banyak percobaan. Tunggu beberapa menit lalu coba lagi.";
+      case "auth/network-request-failed":
+        return "Koneksi bermasalah. Periksa internet Anda.";
+      default:
+        return `Login gagal: ${code || "kesalahan tidak diketahui"}`;
+    }
+  };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
 
-    const cleanEmail = email.trim().toLowerCase();
+    const cleanUsername = username.trim().toLowerCase();
+    const fullEmail = `${cleanUsername}${EMAIL_DOMAIN}`;
 
-    // Langkah 1: login ke Firebase Auth (dipisah supaya error-nya jelas)
+    // Langkah 1: login ke Firebase Auth
     let user;
     try {
       const userCredential = await signInWithEmailAndPassword(
         auth,
-        cleanEmail,
+        fullEmail,
         password,
       );
       user = userCredential.user;
     } catch (err) {
       console.error("AUTH ERROR:", err.code, err.message);
-      toast.error(`Login gagal: ${err.code || err.message}`);
+      toast.error(getAuthErrorMessage(err.code));
       setLoading(false);
       return;
     }
 
-    // Langkah 2: ambil role & nama dari Firestore (dipisah juga)
+    // Langkah 2: ambil role & nama dari Firestore
     try {
-      const userDocRef = doc(db, "users", user.uid);
-      const userDocSnap = await getDoc(userDocRef);
+      const userDocSnap = await getDoc(doc(db, "users", user.uid));
 
-      if (userDocSnap.exists()) {
-        const userData = userDocSnap.data();
-        localStorage.setItem("userRole", userData.role || "staff");
-        localStorage.setItem(
-          "userName",
-          userData.name || userData.username || "Pengguna",
-        );
-      } else {
-        console.warn("Dokumen users/" + user.uid + " tidak ditemukan");
-        localStorage.setItem("userRole", "staff");
-        localStorage.setItem("userName", "Pengguna");
+      if (!userDocSnap.exists()) {
+        // Akun Auth masih ada tapi profilnya sudah dihapus supervisor
+        await signOut(auth);
+        toast.error("Akun ini sudah dinonaktifkan. Hubungi Supervisor.");
+        setLoading(false);
+        return;
       }
+
+      const userData = userDocSnap.data();
+      localStorage.setItem("userRole", userData.role || "staff");
+      localStorage.setItem(
+        "userName",
+        userData.name || userData.username || "Pengguna",
+      );
     } catch (err) {
       console.error("FIRESTORE ERROR:", err.code, err.message);
-      toast.error(`Firestore gagal: ${err.code || err.message}`);
+      await signOut(auth);
+      toast.error(`Gagal membaca data user: ${err.code || err.message}`);
       setLoading(false);
       return;
     }
 
-    // Langkah 3: fitur "Ingat Email Saya"
+    // Langkah 3: fitur "Ingat Username Saya"
     if (rememberMe) {
-      localStorage.setItem("rememberedEmail", cleanEmail);
+      localStorage.setItem("rememberedUsername", cleanUsername);
     } else {
-      localStorage.removeItem("rememberedEmail");
+      localStorage.removeItem("rememberedUsername");
     }
 
     toast.success("Login berhasil! Mengalihkan...");
@@ -140,25 +160,28 @@ export default function Login() {
             System Portal Access
           </h2>
           <p className="text-xs text-slate-400 mt-1">
-            Silakan masuk menggunakan Email ID operasional Anda
+            Silakan masuk menggunakan username operasional Anda
           </p>
         </div>
 
         <form onSubmit={handleLogin} className="space-y-4">
-          {/* Input Email */}
+          {/* Input Username */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-              Email ID Karyawan
+              Username Karyawan
             </label>
             <div className="relative flex items-center">
-              <Mail className="w-4 h-4 absolute left-3.5 text-slate-500 pointer-events-none" />
+              <User className="w-4 h-4 absolute left-3.5 text-slate-500 pointer-events-none" />
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
                 required
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-950 border border-slate-800 rounded-lg focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 focus:outline-none text-white text-sm placeholder-slate-600 transition"
-                placeholder="e.g. joko@megaputra.internal"
+                placeholder="e.g. joko"
               />
             </div>
           </div>
@@ -203,7 +226,7 @@ export default function Login() {
             </div>
           </div>
 
-          {/* Checkbox: Ingat Email Saya */}
+          {/* Checkbox */}
           <div className="flex items-center justify-between text-xs py-1">
             <label className="flex items-center gap-2 cursor-pointer text-slate-300 select-none">
               <input
@@ -212,7 +235,7 @@ export default function Login() {
                 onChange={(e) => setRememberMe(e.target.checked)}
                 className="w-4 h-4 rounded bg-slate-950 border-slate-800 text-emerald-600 focus:ring-emerald-500/50 focus:ring-offset-slate-900 cursor-pointer accent-emerald-500"
               />
-              <span>Ingat Email Saya</span>
+              <span>Ingat Username Saya</span>
             </label>
           </div>
 
@@ -242,7 +265,7 @@ export default function Login() {
         <span>Logistik Management System &bull; Secured Connection</span>
       </div>
 
-      {/* Modal Petunjuk Lupa Password Operasional */}
+      {/* Modal Lupa Password */}
       {isForgotModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl text-white relative">
@@ -262,7 +285,7 @@ export default function Login() {
             </h3>
             <p className="text-xs text-slate-400 leading-relaxed mb-4">
               Untuk menjaga keamanan akun operasional tambang, reset password
-              dilakukan secara terpusat oleh **Supervisor**.
+              dilakukan secara terpusat oleh <b>Supervisor</b>.
             </p>
 
             <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800/80 space-y-2 mb-5">
@@ -274,10 +297,10 @@ export default function Login() {
                   </span>
                   1. Hubungi Supervisor/Admin Site.
                   <br />
-                  2. Minta reset password akun email Anda.
+                  2. Minta dibuatkan akun baru dengan username baru.
                   <br />
-                  3. Supervisor akan mengganti password Anda secara instan di
-                  panel User Management.
+                  3. Supervisor akan memberikan username dan password baru
+                  kepada Anda.
                 </div>
               </div>
             </div>

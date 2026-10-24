@@ -6,13 +6,20 @@ import {
   setDoc,
   deleteDoc,
 } from "firebase/firestore";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { initializeApp, getApps } from "firebase/app";
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
 import { db, auth } from "../../firebase";
 import { toast } from "react-hot-toast";
 import UserFormModal from "../../components/Modal/UserFormModal";
 import CustomSelect from "../../components/Common/CustomSelect";
 import DeleteConfirmModal from "../../components/Buttons/DeleteConfirmModal";
 import { Pencil, Trash2 } from "lucide-react";
+
+const EMAIL_DOMAIN = "@megaputra.internal";
 
 export default function UserManagement() {
   const [users, setUsers] = useState([]);
@@ -21,7 +28,6 @@ export default function UserManagement() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editData, setEditData] = useState(null);
 
-  // State untuk Modal Konfirmasi Hapus Kustom & Toast
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [userToDelete, setUserToDelete] = useState(null);
 
@@ -83,47 +89,50 @@ export default function UserManagement() {
     fetchUsers();
   }, []);
 
+  // Buat akun Auth lewat app kedua supaya supervisor tidak ikut ke-logout
+  const createAuthUser = async (email, password) => {
+    const secondary =
+      getApps().find((a) => a.name === "secondary") ||
+      initializeApp(auth.app.options, "secondary");
+    const secAuth = getAuth(secondary);
+    const cred = await createUserWithEmailAndPassword(secAuth, email, password);
+    await signOut(secAuth);
+    return cred.user.uid;
+  };
+
   const handleSaveUser = async ({ id, name, username, password, role }) => {
     try {
       if (id) {
-        // MODE EDIT
-        const updatePayload = {
-          name: name.trim(),
-          role: role,
-          updatedAt: new Date().toISOString(),
-        };
-
-        if (password) {
-          updatePayload.lastPasswordResetBySupervisor =
-            new Date().toISOString();
-        }
-
-        await setDoc(doc(db, "users", id), updatePayload, { merge: true });
+        // MODE EDIT: hanya nama & role
+        await setDoc(
+          doc(db, "users", id),
+          {
+            name: name.trim(),
+            role: role,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true },
+        );
         toast.success("Data user berhasil diperbarui!");
       } else {
-        // MODE TAMBAH (Ubah username jadi format email dummy untuk Firebase Auth)
+        // MODE TAMBAH
         if (!password) {
           toast.error("Password wajib diisi untuk user baru!");
           return;
         }
 
-        const dummyEmail = `${username.trim().toLowerCase()}@megaputra.internal`;
-        const userCredential = await createUserWithEmailAndPassword(
-          auth,
-          dummyEmail,
-          password,
-        );
-        const uid = userCredential.user.uid;
+        const cleanUsername = username.trim().toLowerCase();
+        const email = `${cleanUsername}${EMAIL_DOMAIN}`;
 
-        const newPayload = {
+        const uid = await createAuthUser(email, password);
+
+        await setDoc(doc(db, "users", uid), {
           name: name.trim(),
-          username: username.trim().toLowerCase(),
-          email: dummyEmail,
+          username: cleanUsername,
+          email: email,
           role: role,
           createdAt: new Date().toISOString(),
-        };
-
-        await setDoc(doc(db, "users", uid), newPayload);
+        });
         toast.success("User baru berhasil didaftarkan!");
       }
 
@@ -132,25 +141,31 @@ export default function UserManagement() {
       reloadUsers();
     } catch (error) {
       console.error("Gagal menyimpan user:", error);
-      toast.error(
-        "Gagal: " + (error.message || "Terjadi kesalahan pada sistem."),
-      );
+      if (error.code === "auth/email-already-in-use") {
+        toast.error(
+          "Username ini pernah dipakai. Gunakan username lain (misal tambah angka).",
+        );
+      } else if (error.code === "auth/weak-password") {
+        toast.error("Password terlalu lemah, minimal 6 karakter.");
+      } else {
+        toast.error(
+          "Gagal: " + (error.message || "Terjadi kesalahan pada sistem."),
+        );
+      }
     }
   };
 
-  // Trigger buka modal konfirmasi hapus
   const handleDeleteClick = (id, userName) => {
     setUserToDelete({ id, userName });
     setIsDeleteModalOpen(true);
   };
 
-  // Eksekusi hapus setelah dikonfirmasi di modal kustom
   const handleConfirmDelete = async () => {
     if (!userToDelete) return;
     try {
       await deleteDoc(doc(db, "users", userToDelete.id));
       setUsers((prev) => prev.filter((u) => u.id !== userToDelete.id));
-      toast.success("Akses user berhasil dihapus.");
+      toast.success("Akses user berhasil dicabut.");
       setIsDeleteModalOpen(false);
       setUserToDelete(null);
     } catch (error) {
@@ -222,7 +237,7 @@ export default function UserManagement() {
 
       {/* Filter Bar */}
       <div className="bg-white dark:bg-[#111827] rounded-xl p-4 shadow-xs border border-slate-200 dark:border-slate-800 flex flex-wrap items-center gap-3 transition-colors">
-        <div className="flex-1 min-w-[240px]">
+        <div className="flex-1 min-w-60">
           <input
             type="text"
             placeholder="🔍 Cari nama atau username..."
@@ -304,7 +319,7 @@ export default function UserManagement() {
                               setIsModalOpen(true);
                             }}
                             className="p-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer"
-                            title="Edit User & Password"
+                            title="Edit Nama & Role"
                           >
                             <Pencil className="w-3.5 h-3.5" />
                           </button>
@@ -342,13 +357,12 @@ export default function UserManagement() {
         roleOptions={roleOptions}
       />
 
-      {/* Modal Konfirmasi Hapus Kustom */}
       <DeleteConfirmModal
         isOpen={isDeleteModalOpen}
         onClose={() => setIsDeleteModalOpen(false)}
         onConfirm={handleConfirmDelete}
         title="Hapus Akun Pengguna"
-        message={`Apakah Anda yakin ingin menghapus akses akun "${userToDelete?.userName}"? Tindakan ini tidak dapat dibatalkan.`}
+        message={`Apakah Anda yakin ingin mencabut akses akun "${userToDelete?.userName}"? Tindakan ini tidak dapat dibatalkan.`}
       />
     </div>
   );
