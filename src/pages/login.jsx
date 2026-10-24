@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { signInWithEmailAndPassword } from "firebase/auth";
-import { collection, query, where, getDocs } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../firebase";
 import { useNavigate } from "react-router-dom";
 import { toast, Toaster } from "react-hot-toast";
@@ -8,7 +8,7 @@ import gsap from "gsap";
 
 import {
   Pickaxe,
-  User,
+  Mail,
   Lock,
   Eye,
   EyeOff,
@@ -22,7 +22,14 @@ import {
 } from "lucide-react";
 
 export default function Login() {
-  const [username, setUsername] = useState("");
+  // Ambil data tersimpan langsung saat inisialisasi state agar bersih dari warning linter
+  const [email, setEmail] = useState(() => {
+    return localStorage.getItem("rememberedEmail") || "";
+  });
+  const [rememberMe, setRememberMe] = useState(() => {
+    return !!localStorage.getItem("rememberedEmail");
+  });
+
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -43,7 +50,6 @@ export default function Login() {
         cardRef.current,
         { opacity: 0, y: 30, scale: 0.95 },
         { opacity: 1, y: 0, scale: 1, duration: 0.7, ease: "power3.out" },
-        "-=0.3",
       );
     });
     return () => ctx.revert();
@@ -53,40 +59,41 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
 
-    const cleanUsername = username.trim().toLowerCase();
+    const cleanEmail = email.trim().toLowerCase();
 
     try {
-      // 1. Cari dokumen di koleksi 'users' berdasarkan field 'username'
-      const usersRef = collection(db, "users");
-      const q = query(usersRef, where("username", "==", cleanUsername));
-      const querySnapshot = await getDocs(q);
-
-      if (querySnapshot.empty) {
-        toast.error("Username tidak ditemukan!");
-        setLoading(false);
-        return;
-      }
-
-      // 2. Ambil data user & email dari Firestore
-      const userDoc = querySnapshot.docs[0];
-      const userData = userDoc.data();
-      const userEmail = userData.email;
-
-      if (!userEmail) {
-        toast.error("Email untuk username ini tidak terdaftar di sistem!");
-        setLoading(false);
-        return;
-      }
-
-      // 3. Authenticate ke Firebase Auth menggunakan email yang ditemukan
-      await signInWithEmailAndPassword(auth, userEmail, password);
-
-      // 4. Simpan info user ke localStorage
-      localStorage.setItem("userRole", userData.role || "");
-      localStorage.setItem(
-        "userName",
-        userData.name || userData.username || "Pengguna",
+      // 1. Autentikasi langsung ke Firebase Auth menggunakan Email & Password
+      const userCredential = await signInWithEmailAndPassword(
+        auth,
+        cleanEmail,
+        password,
       );
+      const user = userCredential.user;
+
+      // 2. Ambil data role & nama asli dari Firestore berdasarkan UID user
+      const userDocRef = doc(db, "users", user.uid);
+      const userDocSnap = await getDoc(userDocRef);
+
+      if (userDocSnap.exists()) {
+        const userData = userDocSnap.data();
+        // Simpan role dan nama asli dari database agar sidebar & hak akses terbaca
+        localStorage.setItem("userRole", userData.role || "staff");
+        localStorage.setItem(
+          "userName",
+          userData.name || userData.username || "Pengguna",
+        );
+      } else {
+        // Fallback jika dokumen di Firestore belum ada
+        localStorage.setItem("userRole", "staff");
+        localStorage.setItem("userName", "Pengguna");
+      }
+
+      // 3. Handle fitur "Ingat Email Saya"
+      if (rememberMe) {
+        localStorage.setItem("rememberedEmail", cleanEmail);
+      } else {
+        localStorage.removeItem("rememberedEmail");
+      }
 
       toast.success("Login berhasil! Mengalihkan...");
       setTimeout(() => {
@@ -94,7 +101,7 @@ export default function Login() {
       }, 1000);
     } catch (err) {
       console.error(err);
-      toast.error("Gagal masuk! Periksa kembali password Anda.");
+      toast.error("Gagal masuk! Periksa kembali email dan password Anda.");
       setLoading(false);
     }
   };
@@ -126,25 +133,25 @@ export default function Login() {
             System Portal Access
           </h2>
           <p className="text-xs text-slate-400 mt-1">
-            Silakan masuk menggunakan username operasional Anda
+            Silakan masuk menggunakan Email ID operasional Anda
           </p>
         </div>
 
         <form onSubmit={handleLogin} className="space-y-4">
-          {/* Input Username */}
+          {/* Input Email / User ID */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-              Username Karyawan
+              Email ID Karyawan
             </label>
             <div className="relative flex items-center">
-              <User className="w-4 h-4 absolute left-3.5 text-slate-500 pointer-events-none" />
+              <Mail className="w-4 h-4 absolute left-3.5 text-slate-500 pointer-events-none" />
               <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 required
                 className="w-full pl-10 pr-4 py-2.5 bg-slate-950 border border-slate-800 rounded-lg focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 focus:outline-none text-white text-sm placeholder-slate-600 transition"
-                placeholder="e.g. joko"
+                placeholder="e.g. joko@megaputra.internal"
               />
             </div>
           </div>
@@ -187,6 +194,19 @@ export default function Login() {
                 )}
               </button>
             </div>
+          </div>
+
+          {/* Checkbox: Ingat Email Saya */}
+          <div className="flex items-center justify-between text-xs py-1">
+            <label className="flex items-center gap-2 cursor-pointer text-slate-300 select-none">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded bg-slate-950 border-slate-800 text-emerald-600 focus:ring-emerald-500/50 focus:ring-offset-slate-900 cursor-pointer accent-emerald-500"
+              />
+              <span>Ingat Email Saya</span>
+            </label>
           </div>
 
           {/* Submit Button */}
@@ -247,7 +267,7 @@ export default function Login() {
                   </span>
                   1. Hubungi Supervisor/Admin Site.
                   <br />
-                  2. Minta reset password akun username Anda.
+                  2. Minta reset password akun email Anda.
                   <br />
                   3. Supervisor akan mengganti password Anda secara instan di
                   panel User Management.
